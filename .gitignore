@@ -1,2 +1,20 @@
+# Bỏ qua môi trường ảo Python
 venv/
+.venv/
+__pycache__/
+*.pyc
+
+# Bỏ qua file cấu hình bảo mật
 .env
+
+# Bỏ qua toàn bộ file nhật ký (Log)
+*.log
+
+# Bỏ qua toàn bộ dữ liệu thô (.json) và dữ liệu sạch (.csv)
+*.json
+*.csv
+data/raw/
+data/processed/
+
+# Bỏ qua file bộ não AI sau khi train
+*.pkl
