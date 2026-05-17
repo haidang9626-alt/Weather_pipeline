@@ -1,44 +1,94 @@
--- 1. Tạo bảng chiều lưu thông tin các thành phố (Dimension Table)
-CREATE TABLE
-IF NOT EXISTS cities
-(
-    id INT PRIMARY KEY,
-    name VARCHAR
-(100) NOT NULL,
-    country VARCHAR
-(100),
-    latitude NUMERIC
-(9,6) NOT NULL,
-    longitude NUMERIC
-(9,6) NOT NULL,
-    timezone VARCHAR
-(50) DEFAULT 'auto'
-);
+def insert_weather_dataframe
+(conn, df_clean):
+    """
+    Nhận bảng DataFrame sạch từ Pandas (đã bao gồm cột dự đoán của AI) 
+    và chèn hàng loạt vào bảng 'weather_measurements' [b0.1.2, b0.1.6, b0.1.10].
+    """
+if df_clean is None or df_clean.
+empty:
+print("⚠️ Bảng dữ liệu sạch trống rỗng, bỏ qua bước Load.")
+return
 
--- 2. Tạo bảng sự kiện lưu chỉ số thời tiết theo giờ (Fact Table)
-CREATE TABLE
-IF NOT EXISTS weather_measurements
+    #
+Câu lệnh SQL bổ sung cột predicted_temperature của AI [b0.1.2, b0.1.8]
+    sql = """
+    INSERT INTO weather_measurements (
+        city_id, measured_at, temperature, predicted_temperature, 
+        apparent_temp, rain, pressure, humidity, clouds
+    )
+    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+    ON CONFLICT (city_id, measured_at) DO UPDATE SET
+        temperature = EXCLUDED.temperature,
+        predicted_temperature = EXCLUDED.predicted_temperature, -- Ghi đè nếu AI tính lại số mới [b0.1.18]
+        apparent_temp = EXCLUDED.apparent_temp,
+        rain = EXCLUDED.rain,
+        pressure = EXCLUDED.pressure,
+        humidity = EXCLUDED.humidity,
+        clouds = EXCLUDED.clouds;
+    """
+
+try:
+cursor = conn.cursor
+()
+        count = 0
+
+        for _, row in df_clean.iterrows
+():
+if pd.isna(row["city_id"]):
+continue
+
+# Kiểm tra an toàn xem cột dữ liệu của AI có tồn tại trong bảng Pandas không [b0.1.18]
+            val_predicted_temp =
 (
-    id SERIAL PRIMARY KEY,
-    city_id INT REFERENCES cities
-(id) ON
-DELETE CASCADE,
-    measured_at TIMESTAMP
-NOT NULL,
-    temperature NUMERIC
-(5,2),          -- Nhiệt độ thực tế từ API Open-Meteo
-    predicted_temperature NUMERIC
-(5,2),-- PHẦN MỞ RỘNG: Nhiệt độ do AI của bạn dự đoán
-    apparent_temp NUMERIC
-(5,2),
-    rain NUMERIC
-(5,2),
-    pressure NUMERIC
-(6,1),
-    humidity INT,
-    clouds INT,
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    -- Đảm bảo không lưu trùng dữ liệu của cùng một thành phố tại cùng một giờ
-    CONSTRAINT unique_city_time UNIQUE
-(city_id, measured_at)
-);
+                row["predicted_temperature"]
+if "predicted_temperature" in row
+                and not pd.isna
+(row["predicted_temperature"])
+                else None
+            )
+
+            cursor.
+execute(
+                sql,
+(
+                    int
+(row["city_id"]),
+                    row["measured_at"].to_pydatetime
+(),
+                    row["temperature"]
+if not pd.isna(row["temperature"])
+                    else None,
+                    val_predicted_temp,  # Truyền giá trị của bộ não AI vào đây [b0.1.18]
+                    row["apparent_temp"]
+if not pd.isna(row["apparent_temp"])
+                    else None,
+                    row["rain"]
+if not pd.isna(row["rain"]) else None,
+                    row["pressure"]
+if not pd.isna(row["pressure"]) else None,
+                    int
+(row["humidity"])
+if not pd.isna(row["humidity"])
+                    else None,
+                    int
+(row["clouds"])
+if not pd.isna(row["clouds"]) else None,
+                ),
+            )
+            count += 1
+
+        conn.
+commit
+()
+        cursor.
+close
+()
+print(f
+"✔️ Đã nạp thành công {count} dòng dữ liệu (Thực tế + AI Dự đoán) vào PostgreSQL!")
+    except Exception as
+e:
+print(f
+"❌ Lỗi khi nạp dữ liệu DataFrame vào DB: {e}")
+        conn.
+rollback
+()

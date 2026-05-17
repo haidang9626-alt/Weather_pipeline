@@ -18,3 +18,12 @@ data/processed/
 
 # Bỏ qua file bộ não AI sau khi train
 *.pkl
+venv/
+.venv/
+__pycache__/
+*.pyc
+.env
+data/raw/
+data/processed/
+data/pipeline.log
+ml_core/saved_models/
