@@ -106,11 +106,11 @@ if __name__ == "__main__":
         try:
             chon = int(input("\nChọn thành phố của bạn: ")) - 1
 
-            # Sửa điều kiện so sánh nghiêm ngặt < len để tránh IndexError
+            
             if 0 <= chon < len(ds_tp):
                 Tp = ds_tp[chon]
 
-                # Sửa cú pháp ngoặc vuông lấy dữ liệu tọa độ
+                
                 vido = Tp["latitude"]
                 kinhdo = Tp["longitude"]
                 mui_gio = Tp.get("timezone", "auto")
@@ -119,14 +119,14 @@ if __name__ == "__main__":
                 timestamp = int(now.timestamp())
                 thoigian_now = now.strftime("%Y-%m-%d %H:%M:%S")
 
-                # Sửa 'day' thành 'days' cho đúng chuẩn timedelta [b0.1.2]
+                
                 homqua = now - timedelta(days=1)
                 end = homqua.strftime("%Y-%m-%d")
                 start = (homqua - timedelta(days=365)).strftime("%Y-%m-%d")
 
                 tenfile = Tp["name"].lower().replace(" ", "_")
 
-                # --- 1. XỬ LÝ LƯU FORECAST --- [b0.1.2]
+                
                 forecast_raw = get_thoitiet(vido, kinhdo, mui_gio)
                 if forecast_raw:
                     forecast_raw["metadata"] = {
@@ -135,20 +135,18 @@ if __name__ == "__main__":
                         "city_id": Tp.get("id"),
                     }
                     with open(
-                        f"forecast_raw_{tenfile}.json", "w", encoding="utf-8"
+                        f"data/raw/forecast_raw_{tenfile}.json", "w", encoding="utf-8"
                     ) as f:
                         json.dump(forecast_raw, f, indent=4, ensure_ascii=False)
                     print(f"Lưu thành công file raw forecast của {tenfile}")
 
-                # --- 2. XỬ LÝ LƯU HISTORY --- [b0.1.2]
                 print(
                     f" Đang cào dữ liệu lịch sử từ {start} đến {end}, vui lòng đợi..."
                 )
                 his_raw = get_lichsu(vido, kinhdo, mui_gio, start, end)
                 if his_raw:
-                    # Bổ sung dấu phẩy ngăn cách các tham số trong open()
                     with open(
-                        f"history_raw_{tenfile}.json", "w", encoding="utf-8"
+                        f"data/raw/history_raw_{tenfile}.json", "w", encoding="utf-8"
                     ) as f:
                         json.dump(his_raw, f, indent=4, ensure_ascii=False)
                     print(f"Lưu thành công file raw history của {tenfile}")
