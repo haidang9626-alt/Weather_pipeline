@@ -1,15 +1,16 @@
 import os
-import psycopg2
 from dotenv import load_dotenv
+import pandas as pd
+import psycopg2
 
 load_dotenv()
 
 
 def get_db_connection():
-    """Hàm thiết lập kết nối tới cơ sở dữ liệu PostgreSQL trong Docker container [b0.1.2, b0.1.6, b0.1.7]."""
+    """Hàm thiết lập kết nối tới cơ sở dữ liệu PostgreSQL trong Docker [b0.1.2, b0.1.7]."""
     try:
         conn = psycopg2.connect(
-            host="localhost",  # Vì Docker mở cổng ra máy cục bộ
+            host="localhost",
             port="5432",
             user=os.getenv("DB_USER", "postgres"),
             password=os.getenv("DB_PASSWORD", "admin_password"),
@@ -22,7 +23,7 @@ def get_db_connection():
 
 
 def init_database():
-    """Đọc file init.sql và tự động tạo các bảng vào Database nếu chưa có."""
+    """Đọc file init.sql và tự động khởi tạo cấu trúc các bảng SQL [b0.1.2, b0.1.8]."""
     conn = get_db_connection()
     if not conn:
         return
@@ -50,10 +51,7 @@ def init_database():
 
 
 def insert_city(conn, city_data):
-    """
-    Chèn thông tin thành phố vào bảng 'cities' (Dimension table).
-    city_data là một Dictionary chứa thông tin thành phố lấy từ API Geocoding.
-    """
+    """Chèn thông tin thành phố vào bảng danh mục 'cities' (Dimension table) [b0.1.2, b0.1.8]."""
     sql = """
     INSERT INTO cities (id, name, country, latitude, longitude, timezone)
     VALUES (%s, %s, %s, %s, %s, %s)
@@ -84,19 +82,21 @@ def insert_city(conn, city_data):
 
 
 def insert_weather_dataframe(conn, df_clean):
-    """
-    Nhận bảng DataFrame sạch từ Pandas và chèn hàng loạt vào bảng 'weather_measurements' (Fact table).
-    """
+    """Nạp bảng dữ liệu sạch từ Pandas (Gồm cả số thực tế và số AI đoán) vào PostgreSQL [b0.1.2, b0.1.6, b0.1.18]."""
     if df_clean is None or df_clean.empty:
         print("⚠️ Bảng dữ liệu sạch trống rỗng, bỏ qua bước Load.")
         return
 
-    # Câu lệnh INSERT kết hợp ON CONFLICT để ghi đè nếu trùng giờ (Idempotent Pipeline)
+    # Câu lệnh SQL đã được cập nhật thêm cột dữ liệu thông minh của AI [b0.1.2, b0.1.8]
     sql = """
-    INSERT INTO weather_measurements (city_id, measured_at, temperature, apparent_temp, rain, pressure, humidity, clouds)
-    VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+    INSERT INTO weather_measurements (
+        city_id, measured_at, temperature, predicted_temperature, 
+        apparent_temp, rain, pressure, humidity, clouds
+    )
+    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
     ON CONFLICT (city_id, measured_at) DO UPDATE SET
         temperature = EXCLUDED.temperature,
+        predicted_temperature = EXCLUDED.predicted_temperature,
         apparent_temp = EXCLUDED.apparent_temp,
         rain = EXCLUDED.rain,
         pressure = EXCLUDED.pressure,
@@ -108,23 +108,26 @@ def insert_weather_dataframe(conn, df_clean):
         cursor = conn.cursor()
         count = 0
 
-        # Duyệt qua từng dòng trong bảng Pandas DataFrame để chèn vào SQL
         for _, row in df_clean.iterrows():
-            # Đề phòng trường hợp khuyết khóa ngoại city_id
             if pd.isna(row["city_id"]):
                 continue
+
+            # Kiểm tra an toàn xem cột predicted_temperature có tồn tại trong bảng không [b0.1.18]
+            val_predicted_temp = (
+                row["predicted_temperature"]
+                if "predicted_temperature" in row
+                and not pd.isna(row["predicted_temperature"])
+                else None
+            )
 
             cursor.execute(
                 sql,
                 (
                     int(row["city_id"]),
-                    row["measured_at"].to_pydatetime(),  # Chuyển đổi timestamp Pandas sang Datetime Python chuẩn
-                    row["temperature"]
-                    if not pd.isna(row["temperature"])
-                    else None,
-                    row["apparent_temp"]
-                    if not pd.isna(row["apparent_temp"])
-                    else None,
+                    row["measured_at"].to_pydatetime(),
+                    row["temperature"] if not pd.isna(row["temperature"]) else None,
+                    val_predicted_temp,  # Số liệu dự đoán hiệu chỉnh từ bộ não AI [b0.1.18]
+                    row["apparent_temp"] if not pd.isna(row["apparent_temp"]) else None,
                     row["rain"] if not pd.isna(row["rain"]) else None,
                     row["pressure"] if not pd.isna(row["pressure"]) else None,
                     int(row["humidity"]) if not pd.isna(row["humidity"]) else None,
@@ -135,22 +138,18 @@ def insert_weather_dataframe(conn, df_clean):
 
         conn.commit()
         cursor.close()
-        print(f"✔️ Đã nạp thành công {count} dòng dữ liệu thời tiết sạch vào PostgreSQL!")
+        print(f"✔️ Đã nạp thành công {count} dòng dữ liệu (Thực tế + AI Dự đoán) vào PostgreSQL!")
     except Exception as e:
         print(f"❌ Lỗi khi nạp dữ liệu DataFrame vào DB: {e}")
         conn.rollback()
 
 
-# --- SỬA LẠI PHẦN CHẠY THỬ (MAIN) ĐỂ KIỂM TRA LUỒNG TẢI DỮ LIỆU ---
+# --- PHẦN CHẠY THỬ NGHIỆM ĐỂ KIỂM TRA LUỒNG TẢI DỮ LIỆU ---
 if __name__ == "__main__":
-    import pandas as pd
-    from transform import transform_forecast
-
     # 1. Chạy khởi tạo cấu trúc bảng trước
     init_database()
 
-    # 2. Giả lập một gói dữ liệu thành phố Hà Nội để đồng bộ bảng Dimension
-    # Id 1581130 chính là mã ID thực tế của Hà Nội trả về trong file JSON của bạn
+    # 2. Tạo gói thông tin mẫu của Hà Nội để nạp vào bảng Dimension
     hanoi_meta = {
         "id": 1581130,
         "name": "Hanoi",
@@ -162,23 +161,17 @@ if __name__ == "__main__":
 
     connection = get_db_connection()
     if connection:
-        # Kiểm tra nạp bảng thành phố
         insert_city(connection, hanoi_meta)
 
-        # 3. Đọc thử bảng dữ liệu forecast sạch từ file CSV mà Pandas vừa xuất ra ở lượt chat trước
-        print("\n🚚 Đang thử nghiệm nạp bảng dữ liệu forecast_clean_hanoi.csv vào Postgres...")
+        # 3. Đọc thử bảng dữ liệu forecast sạch từ file CSV mà bạn đã biến đổi ở bước trước
+        print("\n🚚 Đang kiểm tra nạp dữ liệu sạch từ tệp CSV vào Postgres...")
         try:
             df_test = pd.read_csv("data/processed/forecast_clean_hanoi.csv")
-            # Vì đọc từ CSV nên cần ép lại kiểu DateTime cho cột thời gian
             df_test["measured_at"] = pd.to_datetime(df_test["measured_at"])
 
-            # Kích hoạt hàm nạp dữ liệu hàng loạt
+            # Thử nghiệm nạp dữ liệu hàng loạt vào Database [b0.1.2]
             insert_weather_dataframe(connection, df_test)
         except FileNotFoundError:
-            print(
-                "❌ Không tìm thấy file 'data/processed/forecast_clean_hanoi.csv'. Hãy chạy file 'transform.py' trước!"
-            )
+            print("⚠️ Chưa tìm thấy tệp 'data/processed/forecast_clean_hanoi.csv'. Hãy chạy tệp 'transform.py' trước!")
 
         connection.close()
-
-
