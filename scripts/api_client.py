@@ -1,13 +1,15 @@
-from datetime import datetime, timedelta
+from datetime import datetime
 import json
 import os
 import requests
 from dotenv import load_dotenv
+import logging
 
 load_dotenv()
-api_url_his = os.getenv("OMH_url")
-api_url = os.getenv("OM_api")
 
+api_url = os.getenv("OM_api")
+os.makedirs("data/raw", exist_ok=True)
+logger = logging.getLogger("Extract")
 
 def get_toado(tentp):
     url = "https://geocoding-api.open-meteo.com/v1/search"
@@ -16,14 +18,15 @@ def get_toado(tentp):
         response = requests.get(url, params=params, timeout=10)
         response.raise_for_status()
         return response.json()
+    
     except requests.exceptions.HTTPError as http_er:
-        print(f"Lỗi http từ server(có thể sai api hoặc url): {http_er}")
+        logger.error(f"Lỗi http từ server (có thể sai api hoặc url): {http_er}")
         return None
     except requests.exceptions.Timeout as timeout_er:
-        print(f"Lỗi quá thời gian chờ: {timeout_er}")
+        logger.error(f"Lỗi quá thời gian chờ: {timeout_er}")
         return None
     except requests.exceptions.RequestException as RE:
-        print(f"Lỗi hệ thống mạng không xác định: {RE}")
+        logger.error(f"Lỗi hệ thống mạng không xác định: {RE}")
         return None
 
 
@@ -31,48 +34,52 @@ def get_thoitiet(vido, kinhdo, mui_gio):
     params = {
         "latitude": vido,
         "longitude": kinhdo,
-        "current": "temperature_2m,precipitation,surface_pressure",
         "hourly": "temperature_2m,apparent_temperature,precipitation,surface_pressure,relative_humidity_2m,cloud_cover",
         "timezone": mui_gio,
     }
     try:
         response = requests.get(api_url, params=params, timeout=10)
         response.raise_for_status()
-        return response.json()
+        
+        data = response.json()
+        sodong = len(data["hourly"]["time"])
+        logger.info(f"Số Dòng: {sodong}")
+        return data
+    
     except requests.exceptions.HTTPError as http_er:
-        print(f"Lỗi http từ server(có thể sai api hoặc url): {http_er}")
+        logger.error(f"Lỗi http từ server(sai api hoặc url): {http_er}")
         return None
     except requests.exceptions.Timeout as timeout_er:
-        print(f"Lỗi quá thời gian chờ: {timeout_er}")
+        logger.error(f"Lỗi quá thời gian chờ (Timeout): {timeout_er}")
         return None
     except requests.exceptions.ConnectionError as conec_er:
-        print(f"Lỗi quá thời gian chờ: {conec_er}")
+        logger.error(f"Lỗi kết nối mạng (Connection Error): {conec_er}")
         return None
     except requests.exceptions.RequestException as RE:
-        print(f"Lỗi hệ thống mạng không xác định: {RE}")
+        logger.error(f"Lỗi hệ thống mạng không xác định: {RE}")
         return None
 
 
-def get_lichsu(vido, kinhdo, mui_gio, start, end):
-    params = {
-        "latitude": vido,
-        "longitude": kinhdo,
-        "start_date": start,
-        "end_date": end,
-        "hourly": "temperature_2m,apparent_temperature,precipitation,surface_pressure,relative_humidity_2m,cloud_cover",
-        "daily": "precipitation_hours,weather_code,temperature_2m_max,temperature_2m_min,shortwave_radiation_sum",
-        "timezone": mui_gio,
-    }
-    try:
-        response = requests.get(api_url_his, params=params, timeout=20)
-        response.raise_for_status()
-        return response.json()
-    except requests.exceptions.RequestException as RE:
-        print(f"Lỗi hệ thống mạng không xác định {RE}")
-        return None
-    except (KeyError, ValueError) as data_er:
-        print(f"Lỗi cấu trúc dl json bị trống hoặc thay đổi {data_er}")
-        return None
+def run_extract(vido, kinhdo, mui_gio, tenfile, city_id):
+    forecast_raw = get_thoitiet(vido, kinhdo, mui_gio)
+    
+    if forecast_raw:
+        now = datetime.now()
+        forecast_raw["metadata"] = {
+            "timestamp": int(now.timestamp()),
+            "measured_at": now.strftime("%Y-%m-%d %H:%M:%S"),
+            "city_id": city_id,
+        }
+        
+        filepath = f"data/raw/forecast_raw_{tenfile}.json"
+        
+        with open(filepath, "w", encoding="utf-8") as f:
+            json.dump(forecast_raw, f, indent=4, ensure_ascii=False)
+            
+        logger.info(f"Lưu thành công file raw cho tỉnh: {tenfile}")
+        return filepath
+        
+    return None
 
 
 if __name__ == "__main__":
@@ -101,55 +108,33 @@ if __name__ == "__main__":
                 l.append(tinh)
             diachi = ", ".join(l)
 
-            print(f"{i+1} {ten} Vị trí: {diachi}, Quốc gia: {quocgia}")
+            print(f"{i+1}. {ten} | Vị trí: {diachi} | Quốc gia: {quocgia}")
 
         try:
-            chon = int(input("\nChọn thành phố của bạn: ")) - 1
+            chon = int(input("\nChọn thành phố của bạn (số): ")) - 1
 
-            
             if 0 <= chon < len(ds_tp):
                 Tp = ds_tp[chon]
 
-                
                 vido = Tp["latitude"]
                 kinhdo = Tp["longitude"]
                 mui_gio = Tp.get("timezone", "auto")
-
-                now = datetime.now()
-                timestamp = int(now.timestamp())
-                thoigian_now = now.strftime("%Y-%m-%d %H:%M:%S")
-
-                
-                homqua = now - timedelta(days=1)
-                end = homqua.strftime("%Y-%m-%d")
-                start = (homqua - timedelta(days=365)).strftime("%Y-%m-%d")
+                city_id = Tp.get("id")
 
                 tenfile = Tp["name"].lower().replace(" ", "_")
 
-                
-                forecast_raw = get_thoitiet(vido, kinhdo, mui_gio)
-                if forecast_raw:
-                    forecast_raw["metadata"] = {
-                        "timestamp": timestamp,
-                        "measured_at": thoigian_now,
-                        "city_id": Tp.get("id"),
-                    }
-                    with open(
-                        f"data/raw/forecast_raw_{tenfile}.json", "w", encoding="utf-8"
-                    ) as f:
-                        json.dump(forecast_raw, f, indent=4, ensure_ascii=False)
-                    print(f"Lưu thành công file raw forecast của {tenfile}")
-
-                print(
-                    f" Đang cào dữ liệu lịch sử từ {start} đến {end}, vui lòng đợi..."
+                logger.info(
+                    f"Bắt đầu kích hoạt luồng tải dữ liệu cho thành phố: {Tp['name']}"
                 )
-                his_raw = get_lichsu(vido, kinhdo, mui_gio, start, end)
-                if his_raw:
-                    with open(
-                        f"data/raw/history_raw_{tenfile}.json", "w", encoding="utf-8"
-                    ) as f:
-                        json.dump(his_raw, f, indent=4, ensure_ascii=False)
-                    print(f"Lưu thành công file raw history của {tenfile}")
+
+                raw_file_path = run_extract(
+                    vido, kinhdo, mui_gio, tenfile, city_id
+                )
+
+                if raw_file_path:
+                    print(
+                        f"\n[THÀNH CÔNG] File raw được lưu tại: {raw_file_path}"
+                    )
 
             else:
                 print("Lựa chọn số thứ tự không nằm trong danh sách.")

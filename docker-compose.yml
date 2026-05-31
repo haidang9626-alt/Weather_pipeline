@@ -3,16 +3,31 @@ version: '3.8'
 services:
   postgres_db:
     image: postgres:15-alpine
-    container_name: weather_postgres
-    restart: always
+    container_name: my_postgres_container
     environment:
+      POSTGRES_DB: ${DB_NAME}
       POSTGRES_USER: ${DB_USER}
       POSTGRES_PASSWORD: ${DB_PASSWORD}
-      POSTGRES_DB: ${DB_NAME}
     ports:
       - "5432:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
+      - ./sql/init.sql:/docker-entrypoint-initdb.d/init.sql
+
+  pipeline:
+    build: .
+    container_name: weather_pipeline
+    depends_on:
+      - postgres_db
+    environment:
+      DB_HOST: postgres_db
+      DB_NAME: ${DB_NAME}
+      DB_USER: ${DB_USER}
+      DB_PASSWORD: ${DB_PASSWORD}
+      OM_api: ${OM_api}
+    volumes:
+      - ./data:/app/data
+      - ./logs:/app/logs
 
 volumes:
   postgres_data:

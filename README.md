@@ -1,107 +1,165 @@
-# Dự án Hệ thống Tự động hóa Dữ liệu Thời tiết kết hợp AI (Weather Data & ML Pipeline)
+# Weather Data Pipeline
 
-Dự án xây dựng một đường ống dữ liệu tự động (ETL Pipeline) thu thập dữ liệu thời tiết thời gian thực, làm sạch, đưa qua mô hình học máy (Machine learning) để dự đoán hiệu chỉnh nhiệt độ và lưu trữ vào cơ sở dữ liệu PostgreSQL chạy trên Docker.
+Pipeline tự động thu thập dữ liệu thời tiết theo giờ từ Open-Meteo API,
+làm sạch dữ liệu và lưu vào PostgreSQL. Toàn bộ hệ thống chạy trong Docker.
 
-## 🛠️ Công nghệ sử dụng
+---
 
-* **Ngôn ngữ chính**: Python 3.12+
-* **Xử lý dữ liệu**: Pandas
-* **Học máy (ML)**: Scikit-learn (Thuật toán Random Forest Regressor), Joblib
-* **Cơ sở dữ liệu**: PostgreSQL 15, Thư viện Psycopg2
-* **Hạ tầng**: Docker, Docker Compose
-* **Tự động hóa**: APScheduler
-* **Nguồn dữ liệu**: Open-Meteo API (Free Geocoding, Forecast & Archive API)
+## Mục tiêu dự án
 
-## 📁 Cấu trúc thư mục dự án
+Dự án mô phỏng quy trình xử lý dữ liệu thực tế trong môi trường Data Engineering,
+bao gồm thu thập dữ liệu từ nguồn bên ngoài, xử lý dữ liệu thô, và lưu trữ
+có cấu trúc vào cơ sở dữ liệu quan hệ.
 
-```text
-Weather/
-├── dags/
-│   └── weather_pipeline.py  # File điều phối trung tâm, chạy tự động hằng giờ
-├── database/
-│   └── init.sql             # File định nghĩa cấu trúc bảng SQL (Star Schema)
-├── data/
-│   ├── raw/                 # Nơi lưu trữ file JSON thô từ API
-│   ├── processed/           # Nơi lưu trữ file CSV sạch sau khi qua Pandas
-│   └── pipeline.log         # File nhật ký ghi lại lịch sử chạy ngầm của hệ thống
-├── ml_core/
-│   ├── saved_models/
-│   │   └── weather_model.pkl # File bộ não AI sau khi đã train xong
-│   └── train.py             # Kịch bản đọc dữ liệu lịch sử 1 năm để huấn luyện AI
-├── scripts/
-│   ├── api_client.py        # Tầng EXTRACT: Chứa các hàm gọi API (Toạ độ, Dự báo, Lịch sử)
-│   ├── data_loader.py       # Tầng LOAD: Chứa hàm kết nối và chèn dữ liệu vào PostgreSQL
-│   └── transform.py         # Tầng TRANSFORM: Dùng Pandas phẳng hóa JSON và làm sạch dữ liệu
-├── .env                     # File lưu trữ biến môi trường (Mật khẩu DB, URL API)
-├── .gitignore               # File chặn các dữ liệu rác, file nặng và bảo mật lên GitHub
-└── requirements.txt         # Danh sách các thư viện cần cài đặt của dự án
-```
+---
 
-## 🔄 Quy trình vận hành của hệ thống
+## Kiến trúc hệ thống
 
-Hệ thống được chia làm hai luồng hoạt động chính:
+    Open-Meteo API
+          |
+          v
+    api_client.py       Thu thập dữ liệu thô, lưu vào data/raw/
+          |
+          v
+    data_transformer.py Làm sạch dữ liệu, lưu vào data/processed/
+          |
+          v
+    data_loader.py      Nạp dữ liệu vào PostgreSQL
+          |
+          v
+    PostgreSQL (Docker) Lưu trữ dữ liệu có cấu trúc
 
-### 1. Luồng huấn luyện AI (Chạy Offline 1 lần duy nhất)
+    pipeline.py điều phối toàn bộ 3 bước trên theo thứ tự
 
-* Chạy `api_client.py` ➡️ Nhập thành phố (ví dụ: Hanoi) ➡️ Tính toán tự động bằng `datetime` để tải **1 năm dữ liệu lịch sử** về lưu thành file `.json` thô.
-* Chạy `transform.py` ➡️ Dùng **Pandas** biến đổi file JSON thô thành file bảng sạch `history_clean_hanoi.csv`.
-* Chạy `ml_core/train.py` ➡️ Trích xuất đặc trưng thời gian (Giờ, Tháng) ➡️ Đưa vào thuật toán **Random Forest** học quy luật biến đổi nhiệt độ ➡️ Xuất ra file bộ não tĩnh `weather_model.pkl`. Sai số đạt mức thấp (~0.77°C).
+---
 
-### 2. Luồng đường ống ETL tự động (Chạy hằng giờ bằng APScheduler)
+## Cấu trúc thư mục
 
-* **Extract**: Trình lập lịch APScheduler kích hoạt hằng giờ ➡️ Gọi API Forecast lấy dữ liệu hiện tại và mảng mô phỏng 168 tiếng tương lai.
-* **Transform**: Pandas tự động trải phẳng mảng JSON tương lai thành dạng hàng và cột, ép kiểu thời gian `DateTime`, đồng bộ khóa ngoại `city_id`.
-* **ML Inference**: Hệ thống nạp các thông số độ ẩm, áp suất thô vừa làm sạch vào file `weather_model.pkl`. Con AI tự động tính toán và nhả ra cột dữ liệu mới: `predicted_temperature` (Nhiệt độ dự đoán thông minh).
-* **Load**: Hệ thống kết nối vào PostgreSQL trong Docker qua thư viện `psycopg2` ➡️ Thực hiện lệnh chèn hàng loạt dữ liệu (bao gồm cả số thực tế và số AI đoán) vào bảng `weather_measurements`. Nếu trùng giờ, hệ thống tự động cập nhật đè (`ON CONFLICT DO UPDATE`) để tránh rác dữ liệu.
+    Weather/
+    ├── data/
+    │   ├── raw/                  File JSON thô nhận từ API
+    │   └── processed/            File CSV sau khi làm sạch
+    ├── database/
+    │   └── init.sql              Tạo bảng khi PostgreSQL khởi động lần đầu
+    ├── logs/
+    │   └── pipeline.log          Ghi lại toàn bộ quá trình chạy pipeline
+    ├── scripts/
+    │   ├── api_client.py         Gọi Open-Meteo API, lưu dữ liệu thô
+    │   ├── data_transformer.py   Làm sạch và chuẩn hóa dữ liệu
+    │   ├── data_loader.py        Nạp dữ liệu vào PostgreSQL
+    │   └── pipeline.py           Điều phối toàn bộ pipeline
+    ├── .env                      Biến môi trường (không commit lên Git)
+    ├── .env.example              Mẫu biến môi trường
+    ├── .gitignore
+    ├── docker-compose.yml        Cấu hình PostgreSQL container
+    ├── Dockerfile                Build image Python chạy pipeline
+    └── requirements.txt          Danh sách thư viện Python
 
-## 🚀 Hướng dẫn cài đặt và khởi chạy dưới máy cục bộ
+---
 
-### 1. Chuẩn bị môi trường
+## Các bước xử lý dữ liệu
 
-Cài đặt phần mềm **Docker Desktop** và bật ứng dụng lên trước.
+### Bước 1 - Extract (api_client.py)
 
-### 2. Thiết lập file cấu hình `.env`
+Gọi Open-Meteo API lấy dự báo thời tiết 7 ngày tới theo giờ cho một thành phố.
+Dữ liệu thô được lưu dưới dạng JSON vào thư mục data/raw/.
 
-Tạo file `.env` ở thư mục gốc và điền thông số:
+Các trường dữ liệu thu thập:
 
-```text
-OM_api=https://open-meteo.com
-OMH_url=https://open-meteo.com
-DB_USER=postgres
-DB_PASSWORD=admin_password
-DB_NAME=weather_pipeline
-```
+- Nhiệt độ thực tế và nhiệt độ cảm nhận
+- Lượng mưa theo giờ
+- Áp suất khí quyển
+- Độ ẩm và độ phủ mây
 
-### 3. Kích hoạt Database PostgreSQL trên Docker
+### Bước 2 - Transform (data_transformer.py)
 
-Mở Terminal tại thư mục gốc và gõ lệnh bật Database chạy ngầm:
+Làm sạch và chuẩn hóa dữ liệu thô:
 
-```bash
-docker-compose up -d
-```
+- Đổi tên cột về dạng chuẩn
+- Chuyển đổi kiểu dữ liệu
+- Xử lý giá trị âm bất hợp lệ bằng clip
+- Nội suy tuyến tính cho missing values
+- Tính chênh lệch nhiệt độ cảm nhận và thực tế
+- Phân loại mức độ mưa: Không mưa, Mưa nhỏ, Mưa to
 
-### 4. Cài đặt thư viện Python
+### Bước 3 - Load (data_loader.py)
 
-Kích hoạt môi trường ảo `venv` và chạy lệnh cài các thư viện có trong tệp cấu hình:
+Nạp dữ liệu đã xử lý vào PostgreSQL.
+Sử dụng Upsert thay vì Insert thông thường để tránh duplicate
+khi pipeline chạy lại nhiều lần.
 
-```bash
-pip install -r requirements.txt
-```
+---
 
-### 5. Khởi tạo cấu trúc bảng dữ liệu
+## Cài đặt và chạy
 
-Chạy file loader để tạo tự động bảng `cities` và `weather_measurements` vào trong Docker:
+Yêu cầu: Python 3.10, Docker Desktop
 
-```bash
-python scripts/data_loader.py
-```
+Bước 1 - Clone repo và tạo file .env
 
-### 6. Bật đường ống tự động chạy ngầm hằng giờ
+    cp .env.example .env
 
-Kích hoạt tệp điều phối chính, hệ thống sẽ chạy chu kỳ đầu tiên ngay lập tức và tự động lặp lại sau mỗi 60 phút:
+Điền thông tin vào file .env
 
-```bash
-python dags/weather_pipeline.py
-```
+    DB_USER=postgres
+    DB_PASSWORD=your_password
+    DB_NAME=weather_db
+    DB_HOST=localhost
+    OM_api=https://api.open-meteo.com/v1/forecast
 
-Nhật ký hoạt động sẽ liên tục được cập nhật vào tệp `data/pipeline.log`.
+Bước 2 - Cài thư viện Python
+
+    pip install -r requirements.txt
+
+Bước 3 - Khởi động PostgreSQL
+
+    docker-compose up -d postgres_db
+
+Bước 4 - Chạy pipeline
+
+    python scripts/pipeline.py
+
+---
+
+## Kiểm tra kết quả
+
+Xem log quá trình chạy
+
+    cat logs/pipeline.log
+
+Kiểm tra dữ liệu trong database
+
+    docker exec -it my_postgres_container psql -U postgres -d weather_db -c "SELECT * FROM weather_hourly LIMIT 5;"
+
+---
+
+## Thêm thành phố mới
+
+Mở scripts/pipeline.py và thêm vào danh sách CITIES
+
+    CITIES = [
+        {
+            "name": "Tay Ninh",
+            "lat": 11.3100,
+            "lon": 106.0980,
+            "tz": "Asia/Ho_Chi_Minh",
+            "id": 1567807,
+        },
+        {
+            "name": "Ho Chi Minh City",
+            "lat": 10.8231,
+            "lon": 106.6297,
+            "tz": "Asia/Ho_Chi_Minh",
+            "id": 1580578,
+        },
+    ]
+
+---
+
+## Kỹ năng thực hành trong dự án
+
+- Xây dựng ETL pipeline với Python
+- Gọi REST API và xử lý dữ liệu JSON
+- Làm sạch dữ liệu chuỗi thời gian với Pandas
+- Thiết kế schema PostgreSQL với index và unique constraint
+- Containerize ứng dụng với Docker và Docker Compose
+- Logging và error handling trong production
