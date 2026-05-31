@@ -24,7 +24,7 @@ có cấu trúc vào cơ sở dữ liệu quan hệ.
     data_transformer.py Làm sạch dữ liệu, lưu vào data/processed/
           |
           v
-    data_loader.py      Nạp dữ liệu vào PostgreSQL
+    data_loader.py      Nạp dữ liệu vào PostgreSQL (Upsert)
           |
           v
     PostgreSQL (Docker) Lưu trữ dữ liệu có cấu trúc
@@ -39,7 +39,7 @@ có cấu trúc vào cơ sở dữ liệu quan hệ.
     ├── data/
     │   ├── raw/                  File JSON thô nhận từ API
     │   └── processed/            File CSV sau khi làm sạch
-    ├── database/
+    ├── sql/
     │   └── init.sql              Tạo bảng khi PostgreSQL khởi động lần đầu
     ├── logs/
     │   └── pipeline.log          Ghi lại toàn bộ quá trình chạy pipeline
@@ -51,9 +51,30 @@ có cấu trúc vào cơ sở dữ liệu quan hệ.
     ├── .env                      Biến môi trường (không commit lên Git)
     ├── .env.example              Mẫu biến môi trường
     ├── .gitignore
-    ├── docker-compose.yml        Cấu hình PostgreSQL container
+    ├── docker-compose.yml        Cấu hình PostgreSQL và pipeline container
     ├── Dockerfile                Build image Python chạy pipeline
     └── requirements.txt          Danh sách thư viện Python
+
+---
+
+## Schema bảng weather_hourly
+
+| Cột           | Kiểu         | Mô tả                                      |
+|---------------|--------------|--------------------------------------------|
+| measured_at   | TIMESTAMP    | Mốc thời gian đo, không null               |
+| city_id       | INT          | ID định danh thành phố từ Open-Meteo       |
+| city_name     | VARCHAR(100) | Tên thành phố                              |
+| temperature   | FLOAT        | Nhiệt độ thực tế (°C)                      |
+| apparent_temp | FLOAT        | Nhiệt độ cảm nhận (°C)                     |
+| temp_diff     | FLOAT        | Chênh lệch cảm nhận – thực tế (°C)        |
+| rain          | FLOAT        | Lượng mưa theo giờ (mm)                    |
+| rain_tier     | VARCHAR(50)  | Phân loại: Không mưa / Mưa nhỏ / Mưa to   |
+| pressure      | FLOAT        | Áp suất khí quyển (hPa)                    |
+| humidity      | INT          | Độ ẩm tương đối (%)                        |
+| clouds        | INT          | Độ phủ mây (%)                             |
+
+Ràng buộc: `UNIQUE(city_id, measured_at)` — đảm bảo không trùng dữ liệu
+khi pipeline chạy lại nhiều lần.
 
 ---
 
@@ -61,32 +82,32 @@ có cấu trúc vào cơ sở dữ liệu quan hệ.
 
 ### Bước 1 - Extract (api_client.py)
 
-Gọi Open-Meteo API lấy dự báo thời tiết 7 ngày tới theo giờ cho một thành phố.
-Dữ liệu thô được lưu dưới dạng JSON vào thư mục data/raw/.
+Gọi Open-Meteo Forecast API lấy dự báo thời tiết 7 ngày tới (168 giờ) cho từng
+thành phố trong danh sách CITIES. Dữ liệu thô được lưu dạng JSON vào data/raw/
+kèm metadata gồm city_id và timestamp.
 
-Các trường dữ liệu thu thập:
-
-- Nhiệt độ thực tế và nhiệt độ cảm nhận
-- Lượng mưa theo giờ
-- Áp suất khí quyển
-- Độ ẩm và độ phủ mây
+Các trường thu thập: nhiệt độ thực tế, nhiệt độ cảm nhận, lượng mưa,
+áp suất khí quyển, độ ẩm, độ phủ mây.
 
 ### Bước 2 - Transform (data_transformer.py)
 
 Làm sạch và chuẩn hóa dữ liệu thô:
 
-- Đổi tên cột về dạng chuẩn
-- Chuyển đổi kiểu dữ liệu
-- Xử lý giá trị âm bất hợp lệ bằng clip
-- Nội suy tuyến tính cho missing values
-- Tính chênh lệch nhiệt độ cảm nhận và thực tế
-- Phân loại mức độ mưa: Không mưa, Mưa nhỏ, Mưa to
+- Làm phẳng JSON, đổi tên cột về dạng chuẩn
+- Chuyển đổi kiểu dữ liệu (measured_at → datetime, humidity/clouds → int)
+- Xử lý giá trị âm bất hợp lệ bằng clip()
+- Nội suy tuyến tính cho missing values, điền median nếu vẫn còn trống
+- Tính temp_diff: chênh lệch nhiệt độ cảm nhận và thực tế
+- Phân loại rain_tier: Không mưa (<0.1mm), Mưa nhỏ (0.1–2mm), Mưa to (>2mm)
+
+Kết quả xuất ra CSV vào data/processed/.
 
 ### Bước 3 - Load (data_loader.py)
 
-Nạp dữ liệu đã xử lý vào PostgreSQL.
-Sử dụng Upsert thay vì Insert thông thường để tránh duplicate
-khi pipeline chạy lại nhiều lần.
+Nạp dữ liệu đã xử lý vào PostgreSQL bằng Upsert:
+nếu bản ghi (city_id, measured_at) đã tồn tại thì cập nhật,
+chưa có thì thêm mới. Pipeline có thể chạy lại bất kỳ lúc nào mà không
+tạo dữ liệu trùng lặp.
 
 ---
 
@@ -94,39 +115,42 @@ khi pipeline chạy lại nhiều lần.
 
 Yêu cầu: Python 3.10, Docker Desktop
 
-Bước 1 - Clone repo và tạo file .env
+**Bước 1** - Clone repo và tạo file .env
 
     cp .env.example .env
 
-Điền thông tin vào file .env
+Điền thông tin vào file .env:
 
     DB_USER=postgres
     DB_PASSWORD=your_password
     DB_NAME=weather_db
-    DB_HOST=localhost
+    DB_HOST=postgres_db
     OM_api=https://api.open-meteo.com/v1/forecast
 
-Bước 2 - Cài thư viện Python
+> Lưu ý: DB_HOST phải là `postgres_db` (tên service trong Docker),
+> không phải `localhost`. OM_api là URL endpoint của Open-Meteo,
+> không phải API key — dịch vụ này hoàn toàn miễn phí và không yêu cầu xác thực.
+
+**Bước 2** - Cài thư viện Python
 
     pip install -r requirements.txt
 
-Bước 3 - Khởi động PostgreSQL
+**Bước 3** - Khởi động toàn bộ hệ thống
 
-    docker-compose up -d postgres_db
+    docker-compose up --build
 
-Bước 4 - Chạy pipeline
-
-    python scripts/pipeline.py
+Docker Compose sẽ khởi động PostgreSQL, tự động tạo schema từ sql/init.sql,
+sau đó chạy pipeline.
 
 ---
 
 ## Kiểm tra kết quả
 
-Xem log quá trình chạy
+Xem log quá trình chạy:
 
     cat logs/pipeline.log
 
-Kiểm tra dữ liệu trong database
+Kiểm tra dữ liệu trong database:
 
     docker exec -it my_postgres_container psql -U postgres -d weather_db -c "SELECT * FROM weather_hourly LIMIT 5;"
 
@@ -134,7 +158,7 @@ Kiểm tra dữ liệu trong database
 
 ## Thêm thành phố mới
 
-Mở scripts/pipeline.py và thêm vào danh sách CITIES
+Mở scripts/pipeline.py và thêm vào danh sách CITIES:
 
     CITIES = [
         {
@@ -153,6 +177,10 @@ Mở scripts/pipeline.py và thêm vào danh sách CITIES
         },
     ]
 
+Để tìm city_id và tọa độ của một thành phố mới, chạy trực tiếp:
+
+    python scripts/api_client.py
+
 ---
 
 ## Kỹ năng thực hành trong dự án
@@ -161,5 +189,6 @@ Mở scripts/pipeline.py và thêm vào danh sách CITIES
 - Gọi REST API và xử lý dữ liệu JSON
 - Làm sạch dữ liệu chuỗi thời gian với Pandas
 - Thiết kế schema PostgreSQL với index và unique constraint
+- Implement Upsert với SQLAlchemy và psycopg2
 - Containerize ứng dụng với Docker và Docker Compose
 - Logging và error handling trong production
